@@ -9,7 +9,10 @@ export function createStats() {
     linesRead: 0, acceptedRecords: 0, rejectedRecords: 0, rejections: {},
     metadataChanges: 0, groups: 0,
     encounters: { protetiva: 0, faccao: 0, generico: 0 }, genericWithVictim: 0,
-    timingsMs: { read: 0, parseAndGroup: 0, detection: 0, write: 0, total: 0 },
+    timingsMs: {
+      read: 0, parseAndGroup: 0, detection: 0,
+      sortAndScan: 0, haversineAndClassification: 0, write: 0, total: 0,
+    },
   };
 }
 
@@ -29,7 +32,7 @@ export function processDataset(input, output, rejects = `${output}.rejects.jsonl
     readGroups(input, (group) => {
       const start = process.hrtime.bigint();
       try {
-        const result = findEncounters(group);
+        const result = findEncounters(group, stats.timingsMs);
         for (const encounter of result.encounters) {
           encounters.push(encounter);
           stats.encounters[encounter.tipo]++;

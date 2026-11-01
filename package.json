@@ -9,6 +9,7 @@
   "scripts": {
     "test": "node --test test/*.test.js",
     "detect": "node src/cli.js",
-    "verify": "node scripts/verify-reference.js"
+    "verify": "node scripts/verify-reference.js",
+    "benchmark": "node scripts/benchmark.js"
   }
 }

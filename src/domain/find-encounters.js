@@ -2,7 +2,10 @@ import { haversine, ENCOUNTER_DISTANCE_METERS } from './haversine.js';
 import { classifyEncounter } from './classify-encounter.js';
 
 // Receives one validated timestamp group with unique IDs. Never retains its arrays.
-export function findEncounters(group) {
+export function findEncounters(group, timings) {
+  // Optional phase instrumentation was authorized for stage-3 measurements.
+  const started = timings ? process.hrtime.bigint() : 0n;
+  let evaluationNs = 0n;
   const { count, ids, lat, lon, meta, timestamp } = group;
   const order = Array.from({ length: count }, (_, index) => index);
   order.sort((a, b) => lat[a] - lat[b]);
@@ -20,6 +23,7 @@ export function findEncounters(group) {
       const lonA = lon[a] / 1e5;
       const latB = lat[b] / 1e5;
       const lonB = lon[b] / 1e5;
+      const evaluationStart = timings ? process.hrtime.bigint() : 0n;
       const distance = haversine(latA, lonA, latB, lonB);
       if (distance < ENCOUNTER_DISTANCE_METERS) {
         const tipo = classifyEncounter(ids[a], meta[a], ids[b], meta[b]);
@@ -37,9 +41,14 @@ export function findEncounters(group) {
           distanciaMetros: distance,
         });
       }
+      if (timings) evaluationNs += process.hrtime.bigint() - evaluationStart;
     }
   }
   encounters.sort((a, b) => a.monitoradosEncontro[0] - b.monitoradosEncontro[0]
     || a.monitoradosEncontro[1] - b.monitoradosEncontro[1]);
+  if (timings) {
+    timings.haversineAndClassification += Number(evaluationNs) / 1e6;
+    timings.sortAndScan += Number(process.hrtime.bigint() - started - evaluationNs) / 1e6;
+  }
   return { encounters, genericWithVictim };
 }

@@ -40,6 +40,17 @@ test('empty and singleton groups produce no encounters', () => {
   }
 });
 
+test('phase instrumentation preserves encounters, counters and input arrays', () => {
+  const group = makeGroup([[2, 0, 0], [1, 1, 1], [3, 40, 40]]);
+  const before = structuredClone(group);
+  const timings = { sortAndScan: 0, haversineAndClassification: 0 };
+  const actual = findEncounters(group, timings);
+  assert.deepEqual(actual, bruteForce(group));
+  assert.deepEqual(group, before);
+  assert.ok(timings.sortAndScan >= 0);
+  assert.ok(timings.haversineAndClassification >= 0);
+});
+
 test('latitude window includes seventeen units but rejects eighteen and nineteen', () => {
   for (const [delta, expectedCount] of [[17, 1], [18, 0], [19, 0]]) {
     const group = makeGroup([[2, 0, 0], [1, delta, 0]]);

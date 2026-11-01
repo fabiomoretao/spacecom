@@ -3,6 +3,7 @@ import { createStats, processDataset } from './process-dataset.js';
 
 const stats = createStats();
 const started = process.hrtime.bigint();
+const cpuStarted = process.cpuUsage();
 let rejects;
 try {
   const args = process.argv.slice(2);
@@ -18,6 +19,9 @@ try {
   process.exitCode = 1;
 } finally {
   stats.timingsMs.total = Number(process.hrtime.bigint() - started) / 1e6;
+  const cpu = process.cpuUsage(cpuStarted);
+  stats.cpuMs = { user: cpu.user / 1000, system: cpu.system / 1000 };
+  stats.peakRssBytes = process.resourceUsage().maxRSS * 1024;
   console.error(`Summary: ${JSON.stringify(stats)}`);
   if (stats.rejectedRecords) {
     console.error(`WARNING: ${stats.rejectedRecords} rejected records; review ${rejects}`);
