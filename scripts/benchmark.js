@@ -7,10 +7,12 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const repetitions = 5;
-const rammap = path.join(root, 'outputs/benchmark-tools/RAMMap64.exe');
+const repetitions = 10;
 const counts = [4, 6, 10, 15, 21, 27];
 const quotePS = (value) => `'${value.replaceAll("'", "''")}'`;
+const sourceFiles = ['src/cli.js', 'src/process-dataset.js', 'src/io/read-groups.js',
+  'src/io/reject-log.js', 'src/io/write-output.js', 'src/domain/find-encounters.js',
+  'src/domain/haversine.js', 'src/domain/classify-encounter.js'];
 
 function powershell(script) {
   const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand',
@@ -36,20 +38,16 @@ function hashFile(file) {
 function warmCache(file) {
   const buffer = Buffer.allocUnsafe(4 * 1024 * 1024);
   const fd = fs.openSync(file, 'r');
-  try { while (fs.readSync(fd, buffer, 0, buffer.length, null)) { /* Preload outside measurement. */ } }
+  try { while (fs.readSync(fd, buffer, 0, buffer.length, null)) { /* Excluded from timing. */ } }
   finally { fs.closeSync(fd); }
 }
 
-function measure(input, output, cold) {
-  // The external monitor samples the OS lifetime peak, not the instantaneous RSS.
+function measure(cli, input, output) {
+  // External sampling of the OS lifetime peak; internal maxRSS permits cross-checks.
   return powershell(`
-${cold ? `foreach ($mode in @('-Es', '-Et')) {
-  $clear = Start-Process -FilePath ${quotePS(rammap)} -ArgumentList @('-accepteula', $mode) -WindowStyle Hidden -PassThru -Wait
-  if ($clear.ExitCode -ne 0) { throw "RAMMap failed: $mode, exit $($clear.ExitCode)" }
-}` : ''}
 $info = New-Object System.Diagnostics.ProcessStartInfo
 $info.FileName = ${quotePS(process.execPath)}
-$info.Arguments = ${quotePS(`"${path.join(root, 'src/cli.js')}" "${input}" "${output}"`)}
+$info.Arguments = ${quotePS(`"${cli}" "${input}" "${output}"`)}
 $info.UseShellExecute = $false
 $info.CreateNoWindow = $true
 $info.RedirectStandardOutput = $true
@@ -87,92 +85,106 @@ $result | ConvertTo-Json -Compress
 `);
 }
 
-function median(values) {
+function summarize(values) {
   const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.floor(sorted.length / 2)];
+  const middle = Math.floor(sorted.length / 2);
+  return { min: sorted[0], median: sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2 };
 }
 
 try {
-  assert.equal(process.argv.length, 2, 'Benchmark has no command-line options');
-  assert.equal(process.platform, 'win32', 'External RSS and cache control currently require Windows');
-  assert.ok(fs.existsSync(rammap), 'Install the authorized Microsoft RAMMap in outputs/benchmark-tools first');
+  assert.equal(process.argv.length, 4, 'Usage: npm run benchmark -- <snapshot-A> <snapshot-B> (each containing src/)');
+  assert.equal(process.platform, 'win32', 'The external RSS monitor currently requires Windows');
+  const variants = ['A', 'B'].map((name, index) => {
+    const directory = path.resolve(process.argv[index + 2]);
+    return { name, directory, sourceHashes: Object.fromEntries(sourceFiles.map((file) => [file, hashFile(path.join(directory, file))])) };
+  });
   const hardware = powershell(`
-$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-$principal = New-Object Security.Principal.WindowsPrincipal($identity)
-if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run benchmark from an elevated terminal for cold-cache measurements' }
-$signature = Get-AuthenticodeSignature -LiteralPath ${quotePS(rammap)}
-if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*O=Microsoft Corporation*') { throw 'RAMMap signature is not valid Microsoft code' }
 $cpuInfo = @(Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors)
 $diskInfo = @(Get-Partition -DriveLetter ${quotePS(path.parse(root).root[0])} | Get-Disk | Select-Object Number, FriendlyName, BusType)
 $physical = @(Get-PhysicalDisk | Select-Object FriendlyName, MediaType, BusType)
-[ordered]@{ cpu = $cpuInfo; volumeDisks = $diskInfo; physicalDisks = $physical; rammapVersion = (Get-Item -LiteralPath ${quotePS(rammap)}).VersionInfo.FileVersion } | ConvertTo-Json -Depth 5 -Compress
+$plan = (& powercfg.exe /getactivescheme | Out-String).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Cannot read the active power scheme' }
+$settings = (& powercfg.exe /query | Out-String).Trim()
+[ordered]@{ cpu = $cpuInfo; volumeDisks = $diskInfo; physicalDisks = $physical; powerScheme = $plan; powerSettings = $settings } | ConvertTo-Json -Depth 5 -Compress
 `);
-  const baselinePath = path.join(root, 'outputs/baseline-hashes-1-5.json');
-  const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf8').replace(/^\uFEFF/, ''));
-  const expected = new Map(baseline.map((entry) => [entry.dataset, entry.sha256]));
-  const firstSixPath = path.join(root, 'outputs/baseline-hash-6.json');
-  const firstSix = JSON.parse(fs.readFileSync(firstSixPath, 'utf8').replace(/^\uFEFF/, ''));
-  expected.set(6, firstSix.sha256);
-  const sourceFiles = ['src/io/read-groups.js', 'src/domain/find-encounters.js',
-    'src/process-dataset.js', 'src/cli.js', 'scripts/benchmark.js'];
+  const baseline = JSON.parse(fs.readFileSync(path.join(root, 'outputs/baseline-hashes-1-5.json'), 'utf8').replace(/^\uFEFF/, ''));
+  const firstSix = JSON.parse(fs.readFileSync(path.join(root, 'outputs/baseline-hash-6.json'), 'utf8').replace(/^\uFEFF/, ''));
+  const expected = new Map([...baseline, firstSix].map((entry) => [entry.dataset, entry.sha256]));
   const report = {
     createdAt: new Date().toISOString(), node: process.version, platform: `${os.platform()} ${os.release()}`,
-    hardware, repetitions, sourceHashes: Object.fromEntries(sourceFiles.map((file) => [file, hashFile(path.join(root, file))])),
+    hardware, variants, repetitionsPerVersion: repetitions,
     method: {
-      phases: 'hrtime.bigint; parseAndGroup includes line scanning, validation and grouping; sortAndScan excludes timed candidate evaluation; detection overlaps its two subphases',
-      wall: 'External PowerShell Stopwatch from Process.Start through exit, including Node startup; monitor setup and cache preparation excluded',
-      rss: 'External polling of OS PeakWorkingSet64 with WaitForExit(1); lower bound if the peak occurs after the final sample; internal maxRSS recorded for comparison',
-      cold: 'Elevated Microsoft RAMMap -Es then -Et immediately before each child; OS file cache only, SSD/controller cache is not flushed',
-      warm: 'Full streaming read of the same input immediately before each child; each child is a fresh Node process',
-      order: 'Five cold/warm pairs per dataset, datasets 1 through 6; no concurrent benchmark runs',
-    }, inputs: [], samples: [], medians: [],
+      order: 'Ten adjacent pairs, AB/BA alternating; ten measured fresh Node processes per version on dataset 6',
+      warm: 'Streaming preload of the same input before every execution; no RAMMap or cache eviction',
+      wall: 'External monotonic Stopwatch from Process.Start through exit, including Node startup; setup and preload excluded',
+      phases: 'hrtime.bigint; parseAndGroup includes scanning, validation and grouping; detection overlaps sortAndScan and haversineAndClassification',
+      rss: 'External PeakWorkingSet64 polling with WaitForExit(1); possible lower bound if final peak is missed; native maxRSS also recorded',
+      warmup: 'One full dataset-6 process per version excluded from statistics; datasets 1-5 also validated before measurement',
+    }, inputs: [], validations: [], warmups: [], samples: [], summaries: [],
   };
-  const reportPath = path.join(root, `outputs/benchmark-${report.createdAt.replaceAll(/[:.]/g, '-')}.json`);
-  for (let dataset = 1; dataset <= 6; dataset++) {
+  const reportPath = path.join(root, `outputs/benchmark-ab-${report.createdAt.replaceAll(/[:.]/g, '-')}.json`);
+
+  function run(variant, dataset) {
     const input = path.join(root, `data/dataset${dataset}.txt`);
     const output = path.join(root, `outputs/dataset${dataset}.json`);
-    assert.equal(hashFile(output), expected.get(dataset), `Dataset ${dataset} output differs from baseline before benchmark`);
-    report.inputs.push({ dataset, bytes: fs.statSync(input).size, sha256: hashFile(input) });
-    for (let repetition = 1; repetition <= repetitions; repetition++) {
-      for (const cache of ['cold', 'warm']) {
-        if (cache === 'warm') warmCache(input);
-        const result = measure(input, output, cache === 'cold');
-        assert.equal(result.exitCode, 0, result.stderr);
-        const summary = result.stderr.split('\n').find((line) => line.startsWith('Summary: '));
-        assert.ok(summary, 'CLI summary missing');
-        const stats = JSON.parse(summary.slice('Summary: '.length));
-        assert.equal(stats.rejectedRecords, 0);
-        assert.ok(!fs.existsSync(`${output}.rejects.jsonl`));
-        assert.equal(Object.values(stats.encounters).reduce((sum, count) => sum + count, 0), counts[dataset - 1]);
-        const sha256 = hashFile(output);
-        assert.equal(sha256, expected.get(dataset), `Dataset ${dataset} output hash changed`);
-        assert.ok(result.peakRssBytes > 0, 'External RSS measurement missing');
-        report.samples.push({ dataset, repetition, cache, sha256, ...result, stats });
-        fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
-        console.log(`Dataset ${dataset} ${cache} ${repetition}/${repetitions}: ${result.wallMs.toFixed(2)} ms, ${(result.peakRssBytes / 1048576).toFixed(2)} MiB; hash matches`);
-      }
-    }
-    for (const cache of ['cold', 'warm']) {
-      const samples = report.samples.filter((sample) => sample.dataset === dataset && sample.cache === cache);
-      report.medians.push({
-        dataset, cache,
-        wallMs: median(samples.map((sample) => sample.wallMs)),
-        peakRssBytes: median(samples.map((sample) => sample.peakRssBytes)),
-        maxPeakRssBytes: Math.max(...samples.map((sample) => sample.peakRssBytes)),
-        timingsMs: Object.fromEntries(Object.keys(samples[0].stats.timingsMs)
-          .map((phase) => [phase, median(samples.map((sample) => sample.stats.timingsMs[phase]))])),
-        cpuMs: median(samples.map((sample) => sample.stats.cpuMs.user + sample.stats.cpuMs.system)),
-      });
-    }
-    fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+    warmCache(input);
+    const result = measure(path.join(variant.directory, 'src/cli.js'), input, output);
+    assert.equal(result.exitCode, 0, result.stderr);
+    const summary = result.stderr.split('\n').find((line) => line.startsWith('Summary: '));
+    assert.ok(summary, 'CLI summary missing');
+    const stats = JSON.parse(summary.slice('Summary: '.length));
+    assert.equal(stats.rejectedRecords, 0);
+    assert.ok(!fs.existsSync(`${output}.rejects.jsonl`));
+    assert.equal(Object.values(stats.encounters).reduce((sum, count) => sum + count, 0), counts[dataset - 1]);
+    const sha256 = hashFile(output);
+    assert.equal(sha256, expected.get(dataset), `Dataset ${dataset} output hash changed`);
+    assert.ok(result.peakRssBytes > 0, 'External RSS measurement missing');
+    return { version: variant.name, dataset, sha256, ...result, stats };
   }
-  console.table(report.medians.map((entry) => ({
-    dataset: entry.dataset, cache: entry.cache, totalMs: entry.wallMs.toFixed(2),
-    readMs: entry.timingsMs.read.toFixed(2), parseMs: entry.timingsMs.parseAndGroup.toFixed(2),
-    scanMs: entry.timingsMs.sortAndScan.toFixed(2), evaluateMs: entry.timingsMs.haversineAndClassification.toFixed(2),
-    writeMs: entry.timingsMs.write.toFixed(2), peakMiB: (entry.peakRssBytes / 1048576).toFixed(2),
+
+  for (let dataset = 1; dataset <= 6; dataset++) {
+    const input = path.join(root, `data/dataset${dataset}.txt`);
+    report.inputs.push({ dataset, bytes: fs.statSync(input).size, sha256: hashFile(input) });
+  }
+  for (const variant of variants) {
+    for (let dataset = 1; dataset <= 5; dataset++) report.validations.push(run(variant, dataset));
+    report.warmups.push(run(variant, 6));
+    console.log(`Version ${variant.name}: datasets 1-6 validated; warmup complete; all hashes match`);
+  }
+  for (let pair = 1; pair <= repetitions; pair++) {
+    const order = pair % 2 ? variants : [...variants].reverse();
+    for (const variant of order) {
+      const sample = { pair, ...run(variant, 6) };
+      report.samples.push(sample);
+      fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+      console.log(`Pair ${pair}/${repetitions} ${variant.name}: ${sample.wallMs.toFixed(2)} ms, ${(sample.peakRssBytes / 1048576).toFixed(2)} MiB; hash matches`);
+    }
+  }
+  report.powerSchemeAfter = powershell('(& powercfg.exe /getactivescheme | Out-String).Trim() | ConvertTo-Json -Compress');
+  assert.equal(report.powerSchemeAfter, hardware.powerScheme, 'Power scheme changed during benchmark');
+  for (const variant of variants) {
+    for (const file of sourceFiles) assert.equal(hashFile(path.join(variant.directory, file)), variant.sourceHashes[file], 'Snapshot changed during benchmark');
+    const samples = report.samples.filter((sample) => sample.version === variant.name);
+    report.summaries.push({
+      version: variant.name, wallMs: summarize(samples.map((sample) => sample.wallMs)),
+      peakRssBytes: summarize(samples.map((sample) => sample.peakRssBytes)),
+      maxPeakRssBytes: Math.max(...samples.map((sample) => sample.peakRssBytes)),
+      timingsMs: Object.fromEntries(Object.keys(samples[0].stats.timingsMs)
+        .map((phase) => [phase, summarize(samples.map((sample) => sample.stats.timingsMs[phase]))])),
+      cpuMs: summarize(samples.map((sample) => sample.stats.cpuMs.user + sample.stats.cpuMs.system)),
+    });
+  }
+  report.pairedWallRatio = summarize(Array.from({ length: repetitions }, (_, index) => {
+    const samples = report.samples.filter((sample) => sample.pair === index + 1);
+    return samples.find((sample) => sample.version === 'B').wallMs / samples.find((sample) => sample.version === 'A').wallMs;
+  }));
+  fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+  console.table(report.summaries.map((entry) => ({
+    version: entry.version, minMs: entry.wallMs.min.toFixed(2), medianMs: entry.wallMs.median.toFixed(2),
+    parseMedianMs: entry.timingsMs.parseAndGroup.median.toFixed(2), scanMedianMs: entry.timingsMs.sortAndScan.median.toFixed(2),
+    peakMedianMiB: (entry.peakRssBytes.median / 1048576).toFixed(2),
   })));
-  console.log(`Report: ${reportPath}`);
+  console.log(`Median paired B/A wall ratio: ${report.pairedWallRatio.median.toFixed(4)}; report: ${reportPath}`);
 } catch (error) {
   console.error(`Benchmark failed: ${error.message}`);
   process.exitCode = 1;

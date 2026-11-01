@@ -2,13 +2,34 @@ import { haversine, ENCOUNTER_DISTANCE_METERS } from './haversine.js';
 import { classifyEncounter } from './classify-encounter.js';
 
 // Receives one validated timestamp group with unique IDs. Never retains its arrays.
-export function findEncounters(group, timings) {
+export function findEncounters(group, timings, sortState) {
   // Optional phase instrumentation was authorized for stage-3 measurements.
   const started = timings ? process.hrtime.bigint() : 0n;
   let evaluationNs = 0n;
   const { count, ids, lat, lon, meta, timestamp } = group;
-  const order = Array.from({ length: count }, (_, index) => index);
-  order.sort((a, b) => lat[a] - lat[b]);
+  const order = sortState?.order ?? [];
+  let resetOrder = !sortState || order.length !== count;
+  if (sortState) {
+    // Keep values, not references to the reader's reusable arrays.
+    for (let i = 0; i < count; i++) {
+      if (sortState.ids[i] !== ids[i]) resetOrder = true;
+      sortState.ids[i] = ids[i];
+    }
+    sortState.ids.length = count;
+  }
+  if (resetOrder) {
+    order.length = count;
+    for (let i = 0; i < count; i++) order[i] = i;
+  }
+  for (let i = 1; i < count; i++) {
+    const index = order[i];
+    let j = i - 1;
+    while (j >= 0 && lat[order[j]] > lat[index]) {
+      order[j + 1] = order[j];
+      j--;
+    }
+    order[j + 1] = index;
+  }
   const encounters = [];
   let genericWithVictim = 0;
 

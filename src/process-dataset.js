@@ -29,10 +29,11 @@ export function processDataset(input, output, rejects = `${output}.rejects.jsonl
     log = createRejectLog(rejects, stats);
     writer = createOutput(output);
     const encounters = [];
+    const sortState = { order: [], ids: [] };
     readGroups(input, (group) => {
       const start = process.hrtime.bigint();
       try {
-        const result = findEncounters(group, stats.timingsMs);
+        const result = findEncounters(group, stats.timingsMs, sortState);
         for (const encounter of result.encounters) {
           encounters.push(encounter);
           stats.encounters[encounter.tipo]++;

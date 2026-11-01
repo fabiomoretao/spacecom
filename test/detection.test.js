@@ -119,12 +119,38 @@ test('antimeridian and polar encounters match the oracle', () => {
   }
 });
 
+test('reused insertion order handles changing sizes, IDs, permutations and reversed latitude order', () => {
+  const sortState = { order: [], ids: [] };
+  const groups = [
+    makeGroup([[1, 0, 0], [2, 17, 0], [3, 34, 0]]),
+    makeGroup([[1, 34, 0], [2, 17, 0], [3, 0, 0]]),
+    makeGroup([[1, 0, 0], [2, 17, 0]]),
+    makeGroup([[7, 17, 0], [Number.MAX_SAFE_INTEGER, 0, 0]]),
+    makeGroup([[Number.MAX_SAFE_INTEGER, 17, 0], [7, 0, 0]]),
+    makeGroup([]),
+    makeGroup([[0, 0, 0]]),
+    makeGroup(Array.from({ length: 80 }, (_, i) => [i, i * 17, 0])),
+    makeGroup(Array.from({ length: 80 }, (_, i) => [i, (79 - i) * 17, 0])),
+  ];
+  for (const group of groups) {
+    const before = structuredClone(group);
+    assert.deepEqual(findEncounters(group, undefined, sortState), bruteForce(group));
+    assert.deepEqual(group, before);
+    assert.equal(sortState.order.length, group.count);
+    assert.equal(new Set(sortState.order).size, group.count);
+    const cachedIds = [...sortState.ids];
+    group.ids.fill(999);
+    assert.deepEqual(sortState.ids, cachedIds);
+  }
+});
+
 test('latitude sweep matches brute force in 4000 deterministic varied groups', () => {
   let seed = 0x12345678;
   const random = (limit) => {
     seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
     return seed % limit;
   };
+  const sortState = { order: [], ids: [] };
   for (let iteration = 0; iteration < 4000; iteration++) {
     const count = random(41);
     const mode = iteration % 4;
@@ -144,7 +170,7 @@ test('latitude sweep matches brute force in 4000 deterministic varied groups', (
       }]);
     }
     const group = makeGroup(rows);
-    const actual = findEncounters(group);
+    const actual = findEncounters(group, undefined, sortState);
     const expected = bruteForce(group);
     assert.equal(actual.genericWithVictim, expected.genericWithVictim, `group ${iteration}`);
     assert.equal(actual.encounters.length, expected.encounters.length, `group ${iteration}`);

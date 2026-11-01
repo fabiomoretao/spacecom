@@ -55,9 +55,15 @@ function parseCoordinate(buffer, start, end, limit) {
   return negative ? -scaled : scaled;
 }
 
-function timestampStart(buffer, start, end) {
+function timestampStart(buffer, start, end, knownTimestamp, result) {
+  result.unchanged = false;
   if (buffer[start] === 34 && buffer[end - 1] === 34) { start++; end--; }
   if (end - start !== 19) return -1;
+  // Only the accepted group's copied bytes can bypass calendar validation.
+  if (knownTimestamp && sameBytes(buffer, start, end, knownTimestamp)) {
+    result.unchanged = true;
+    return start;
+  }
   for (let i = 0; i < 19; i++) {
     const byte = buffer[start + i];
     if (i === 4 || i === 7) { if (byte !== 45) return -1; }
@@ -105,6 +111,7 @@ export function readGroups(path, onGroup, onReject, stats) {
   let buffer = Buffer.allocUnsafe(4 * 1024 * 1024);
   const fields = new Int32Array(8);
   const currentTimestamp = Buffer.alloc(19);
+  const timestampResult = { unchanged: false };
   const cache = new Map();
   const group = {
     timestamp: '', count: 0, ids: new Float64Array(64),
@@ -136,7 +143,7 @@ export function readGroups(path, onGroup, onReject, stats) {
     fields[7] = end + 1;
     id = parseId(buffer, fields[0], fields[1] - 1);
     if (Number.isNaN(id)) return 'invalid-id';
-    timeStart = timestampStart(buffer, fields[2], fields[3] - 1);
+    timeStart = timestampStart(buffer, fields[2], fields[3] - 1, sequence ? currentTimestamp : null, timestampResult);
     if (timeStart < 0) return 'invalid-timestamp';
     lat = parseCoordinate(buffer, fields[3], fields[4] - 1, 90);
     if (Number.isNaN(lat)) return 'invalid-latitude';
@@ -166,7 +173,7 @@ export function readGroups(path, onGroup, onReject, stats) {
 
   function acceptLine(start, end) {
     let order = 0;
-    if (sequence) {
+    if (sequence && !timestampResult.unchanged) {
       for (let i = 0; i < 19; i++) {
         order = buffer[timeStart + i] - currentTimestamp[i];
         if (order) break;
@@ -261,8 +268,12 @@ export function readGroups(path, onGroup, onReject, stats) {
         }
         const end = used + bytes;
         let start = 0;
-        for (let i = scanned; i < end; i++) {
-          if (buffer[i] === 10) { processLine(start, i); start = i + 1; }
+        const chunk = buffer.subarray(0, end);
+        let newline = chunk.indexOf(10, scanned);
+        while (newline !== -1) {
+          processLine(start, newline);
+          start = newline + 1;
+          newline = chunk.indexOf(10, start);
         }
         buffer.copyWithin(0, start, end);
         used = end - start;

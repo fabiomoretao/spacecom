@@ -213,3 +213,26 @@ test('rejection raw excerpts stop at 200 characters', (t) => {
   fixture.read(`${HEADER}\n${'x'.repeat(500)}\n${row(1)}`);
   assert.equal(fixture.rejections()[0].raw, 'x'.repeat(200));
 });
+
+test('timestamp reuse checks quotes and revalidates every changed or previously rejected value', (t) => {
+  const fixture = setup(t);
+  const time = '2024-02-29 00:00:00';
+  fixture.read([HEADER, row(1, time), row(2, `"${time}"`),
+    row(3, '2024-02-30 00:00:00'), row(3, '2024-02-30 00:00:00'), row(3, time),
+    row(4, '2024-02-29 00:00:0x'), row(4, time), row(5, `"${time}`),
+    row(5, '2024-02-29 00:00:01'), row(5, time)].join('\n'));
+  assert.equal(fixture.stats.acceptedRecords, 5);
+  assert.deepEqual(fixture.groups.map((group) => group.count), [4, 1]);
+  assert.deepEqual(fixture.rejections().map((record) => [record.line, record.reason]), [
+    [4, 'invalid-timestamp'], [5, 'invalid-timestamp'], [7, 'invalid-timestamp'],
+    [9, 'invalid-timestamp'], [11, 'out-of-order-timestamp'],
+  ]);
+});
+
+test('an uninitialized timestamp buffer cannot validate zero bytes', (t) => {
+  const fixture = setup(t);
+  fixture.read([HEADER, row(1, '\0'.repeat(19)), row(2)].join('\n'));
+  assert.equal(fixture.stats.acceptedRecords, 1);
+  assert.equal(fixture.groups[0].ids[0], 2);
+  assert.equal(fixture.rejections()[0].reason, 'invalid-timestamp');
+});
