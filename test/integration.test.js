@@ -332,3 +332,62 @@ test('unexpected domain errors are fatal and do not publish the accumulated resu
   assert.equal(fs.readFileSync(fixture.output, 'utf8'), 'previous output');
   fixture.assertNoTemporary();
 });
+
+for (const chunkSize of [1, 7, 64]) {
+  test(`initial ${chunkSize}-byte buffer and reads preserve exact output with BOM, CRLF and optional timestamp quotes`, (t) => {
+    const fixture = setup(t);
+    const faction = 'x'.repeat(200);
+    const text = `\uFEFF${HEADER}\r\n${row(1, `"${TIME}"`, faction, 'true', '2')}\r\n${row(2, TIME, faction)}\r\n${row(3)}\r\n${row(1, '2024-01-01 00:00:01')}`;
+    fs.writeFileSync(fixture.input, text);
+    processDataset(fixture.input, fixture.output);
+    const reference = fs.readFileSync(fixture.output);
+    assert.deepEqual(fixture.readOutput().map((record) => record.tipo), ['protetiva', 'generico', 'generico']);
+    const allocate = Buffer.allocUnsafe;
+    const read = fs.readSync;
+    t.mock.method(Buffer, 'allocUnsafe', (size) => allocate(size === 4 * 1024 * 1024 ? chunkSize : size));
+    t.mock.method(fs, 'readSync', (fd, buffer, offset, length, position) =>
+      read(fd, buffer, offset, Math.min(length, chunkSize), position));
+    const stats = processDataset(fixture.input, fixture.output);
+    assert.deepEqual(fs.readFileSync(fixture.output), reference);
+    assert.equal(stats.acceptedRecords, 4);
+    assert.equal(stats.groups, 2);
+    assert.equal(stats.rejectedRecords, 0);
+    assert.ok(!fs.existsSync(fixture.rejects));
+  });
+}
+
+test('bad lines injected into dataset 2 log exact line numbers and preserve every official encounter', (t) => {
+  const fixture = setup(t);
+  const input = fs.readFileSync(new URL('../data/dataset2.txt', import.meta.url));
+  const headerEnd = input.indexOf(10) + 1;
+  const firstEnd = input.indexOf(10, headerEnd) + 1;
+  const firstLine = input.subarray(headerEnd, firstEnd - 1);
+  const timestamp = '"2024-01-01 00:00:00"';
+  const invalidLatitude = `999;;${timestamp};91.0;0.0;false;`;
+  const conflicting = `${firstLine.toString('utf8').split(';')[0]};changed;${timestamp};0.0;0.0;false;`;
+  const old = '999;;"2023-01-01 00:00:00";0.0;0.0;false;';
+  const parts = [input.subarray(0, headerEnd), Buffer.from('bad\n'), input.subarray(headerEnd, firstEnd),
+    Buffer.from(`${invalidLatitude}\n`), firstLine, Buffer.from(`\n${conflicting}\n${old}\n`), input.subarray(firstEnd)];
+  fs.writeFileSync(fixture.input, Buffer.concat(parts));
+  const result = fixture.run(null);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stats.acceptedRecords, 25000);
+  assert.equal(result.stats.metadataChanges, 0);
+  assert.equal(result.stats.rejectedRecords, 5);
+  const actual = fixture.readOutput();
+  const expected = JSON.parse(fs.readFileSync(new URL('./fixtures/respostas2.json', import.meta.url)));
+  assert.equal(actual.length, expected.length);
+  for (let i = 0; i < expected.length; i++) {
+    const { distanciaMetros: distance, ...record } = actual[i];
+    const { distanciaMetros: expectedDistance, ...expectedRecord } = expected[i];
+    assert.deepEqual(record, expectedRecord);
+    assert.ok(Math.abs(distance - expectedDistance) <= 1e-9);
+  }
+  assert.deepEqual(fixture.readRejects(), [
+    { line: 2, reason: 'field-count', raw: 'bad' },
+    { line: 4, reason: 'invalid-latitude', raw: invalidLatitude },
+    { line: 5, reason: 'duplicate-identical', raw: firstLine.toString('utf8') },
+    { line: 6, reason: 'duplicate-conflicting', raw: conflicting },
+    { line: 7, reason: 'out-of-order-timestamp', raw: old },
+  ]);
+});

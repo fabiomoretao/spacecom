@@ -236,3 +236,19 @@ test('an uninitialized timestamp buffer cannot validate zero bytes', (t) => {
   assert.equal(fixture.groups[0].ids[0], 2);
   assert.equal(fixture.rejections()[0].reason, 'invalid-timestamp');
 });
+
+test('five-digit coordinates reject a nondigit in every fractional position', (t) => {
+  const fixture = setup(t);
+  const lines = [HEADER];
+  for (let digit = 0; digit < 5; digit++) {
+    const fraction = [...'12345'];
+    fraction[digit] = 'x';
+    lines.push(row(1, TIME, '', 'false', '', `1.${fraction.join('')}`, '2.12345'));
+    lines.push(row(1, TIME, '', 'false', '', '1.12345', `2.${fraction.join('')}`));
+  }
+  lines.push(row(2, TIME, '', 'false', '', '1.12345', '2.12345'));
+  fixture.read(lines.join('\n'));
+  assert.equal(fixture.stats.acceptedRecords, 1);
+  assert.deepEqual(fixture.rejections().map((record) => record.reason),
+    Array.from({ length: 5 }, () => ['invalid-latitude', 'invalid-longitude']).flat());
+});
