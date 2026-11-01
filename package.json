@@ -7,6 +7,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "detect": "node src/cli.js",
+    "verify": "node scripts/verify-reference.js"
   }
 }
