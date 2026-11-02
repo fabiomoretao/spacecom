@@ -7,10 +7,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test test/*.test.js",
     "detect": "node src/cli.js",
-    "verify": "node scripts/verify-reference.js",
-    "benchmark": "node scripts/benchmark.js",
-    "benchmark:parse": "node scripts/benchmark-parse.js"
+    "test": "node --test audit/validation.test.mjs"
   }
 }
