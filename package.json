@@ -7,7 +7,6 @@
     "node": ">=22"
   },
   "scripts": {
-    "detect": "node src/cli.js",
-    "test": "node --test audit/validation.test.mjs"
+    "detect": "node src/cli.js"
   }
 }

@@ -2,7 +2,7 @@ const R = 6_371_000;
 const toRadians = (degrees) => (degrees * Math.PI) / 180;
 
 export const ENCOUNTER_DISTANCE_METERS = 20;
-export const isEncounterDistance = distance => distance <= ENCOUNTER_DISTANCE_METERS;
+export const isEncounterDistance = distance => distance < ENCOUNTER_DISTANCE_METERS;
 // Conservative margin applies only to candidate selection, never to distance.
 export const LATITUDE_WINDOW = 20 / R * 180 / Math.PI + 1e-12;
 
