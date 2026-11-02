@@ -5,7 +5,7 @@ const MAX_ID = Buffer.from('9007199254740991');
 const TRUE = Buffer.from('true');
 const FALSE = Buffer.from('false');
 const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-const MAX_CONSECUTIVE_OUT_OF_ORDER = 1000;
+
 
 function sameBytes(buffer, start, end, expected) {
   if (end - start !== expected.length) return false;
@@ -42,9 +42,16 @@ function parseCoordinate(buffer, start, end, limit) {
     whole = whole * 10 + buffer[start++] - 48;
     if (whole > limit) return NaN;
   }
+  if (start === end && start > first) return negative ? -whole : whole;
   if (start === first || buffer[start++] !== 46) return NaN;
   const digits = end - start;
-  if (digits < 1 || digits > 5) return NaN;
+  if (digits < 1) return NaN;
+  if (digits > 5) {
+    for (let i = start; i < end; i++) if (buffer[i] < 48 || buffer[i] > 57) return NaN;
+    const value = Number(buffer.toString('ascii', first, end));
+    if (!Number.isFinite(value) || value > limit) return NaN;
+    return negative ? -value : value;
+  }
   let fraction = 0;
   for (; start < end; start++) {
     if (buffer[start] < 48 || buffer[start] > 57) return NaN;
@@ -52,7 +59,7 @@ function parseCoordinate(buffer, start, end, limit) {
   }
   const scaled = whole * 100000 + fraction * 10 ** (5 - digits);
   if (scaled > limit * 100000) return NaN;
-  return negative ? -scaled : scaled;
+  return (negative ? -scaled : scaled) / 100000;
 }
 
 function timestampStart(buffer, start, end, knownTimestamp, result) {
@@ -107,7 +114,7 @@ function sameMetadata(a, b) {
   return true;
 }
 
-export function readGroups(path, onGroup, onReject, stats) {
+export function readGroups(path, onGroup, onReject, stats, options = {}) {
   let buffer = Buffer.allocUnsafe(4 * 1024 * 1024);
   const fields = new Int32Array(8);
   const currentTimestamp = Buffer.alloc(19);
@@ -115,13 +122,9 @@ export function readGroups(path, onGroup, onReject, stats) {
   const cache = new Map();
   const group = {
     timestamp: '', count: 0, ids: new Float64Array(64),
-    lat: new Int32Array(64), lon: new Int32Array(64), meta: [],
+    lat: new Float64Array(64), lon: new Float64Array(64), meta: [],
   };
   let sequence = 0;
-  let groupLine = 0;
-  let consecutive = 0;
-  let firstOutOfOrderLine = 0;
-  let firstOutOfOrderTimestamp = '';
   let callbackNs = 0n;
   // Scratch values are reused; parsing never commits cache or group state.
   let id, lat, lon, timeStart, metadata, previous, rawChanged;
@@ -180,21 +183,12 @@ export function readGroups(path, onGroup, onReject, stats) {
       }
     }
     if (order < 0) {
-      if (consecutive === 0) {
-        firstOutOfOrderLine = stats.linesRead;
-        firstOutOfOrderTimestamp = buffer.toString('ascii', timeStart, timeStart + 19);
-      }
-      reject('out-of-order-timestamp', start, end);
-      if (++consecutive === MAX_CONSECUTIVE_OUT_OF_ORDER) {
-        throw new Error(`Systematic out-of-order timestamps: sequence starts at line ${firstOutOfOrderLine} (${firstOutOfOrderTimestamp}); current group ${group.timestamp} started at line ${groupLine}`);
-      }
-      return;
+      throw Object.assign(new Error('Input requires sorting'), { code: 'UNSORTED' });
     }
     if (!sequence || order > 0) {
       if (sequence) flushGroup();
       sequence++;
       group.count = 0;
-      groupLine = stats.linesRead;
       buffer.copy(currentTimestamp, 0, timeStart, timeStart + 19);
       group.timestamp = currentTimestamp.toString('ascii');
     }
@@ -218,7 +212,6 @@ export function readGroups(path, onGroup, onReject, stats) {
     group.lat[index] = lat;
     group.lon[index] = lon;
     group.meta[index] = metadata;
-    consecutive = 0;
     stats.acceptedRecords++;
     if (previous && previous.snapshot !== metadata) stats.metadataChanges++;
     if (!previous || rawChanged) {
@@ -240,9 +233,19 @@ export function readGroups(path, onGroup, onReject, stats) {
     }
     const reason = interpret(start, end);
     if (reason) reject(reason, start, end);
+    else if (options.onRecord) options.onRecord({ timestamp: buffer.toString('ascii', timeStart, timeStart + 19), line: stats.linesRead, raw: buffer.toString('utf8', start, end) });
     else acceptLine(start, end);
   }
 
+  if (options.records) {
+    for (const record of options.records) {
+      buffer = Buffer.from(record.raw);
+      stats.linesRead = record.line - 1;
+      processLine(0, buffer.length);
+    }
+    if (sequence) flushGroup();
+    return;
+  }
   const fd = fs.openSync(path, 'r');
   let used = 0;
   let scanned = 0;
