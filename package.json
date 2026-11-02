@@ -8,6 +8,6 @@
   },
   "scripts": {
     "detect": "node src/cli.js",
-    "test": "node --test audit/validation.test.mjs"
+    "test": "node --test tests/*.test.js"
   }
 }

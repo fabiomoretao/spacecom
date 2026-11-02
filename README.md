@@ -25,7 +25,7 @@ Duplicatas semanticamente idênticas são ignoradas e registradas. Dados inváli
 
 ## Regras
 
-Compara somente timestamps iguais, usando Haversine com raio de **6.371.000 metros** e distância **menor ou igual a 20 metros**, conforme instrução atualizada do solicitante. Sem arredondamento na decisão.
+Compara somente timestamps iguais, usando Haversine com raio de **6.371.000 metros** e distância **menor que 20 metros**, conforme o enunciado do desafio. Sem arredondamento na decisão.
 
 Cada par aparece uma vez por timestamp, com prioridade:
 
@@ -54,4 +54,8 @@ Get-ChildItem data/dataset*.txt | ForEach-Object {
 }
 ```
 
-`npm test` executa testes sintéticos e compara datasets 1 e 2 locais em `data/` com gabaritos em `audit/`, sem rede. `node audit/download.mjs` permite conferir as cópias oficiais. Resultados estão em `audit/RELATORIO.md`; medições repetidas em `audit/benchmark-results.json`. Datasets 3–7 são verificações de regressão, não gabaritos oficiais.
+`npm test` executa a suíte versionada em `tests/`, com o runner nativo do Node.js, sem instalação de dependências ou acesso à rede. Os datasets 1 e 2 e seus gabaritos estão em `tests/fixtures/`; a comparação ignora a ordem dos pares e do array, verifica os demais campos e aceita diferença numérica de até `1e-8` metro na distância. Encontros ausentes, extras ou repetidos fazem o teste falhar.
+
+A suíte cobre Haversine, limite estrito de distância (incluindo exatamente 20 metros), três tipos de encontro, vínculo específico agressor/vítima, timestamps exatos, unicidade, posições e estrutura JSON. Também verifica candidatos geográficos contra busca exaustiva em amostras determinísticas, polos, antimeridiano, mudanças de metadados, entrada desordenada, duplicatas, erros de entrada e execução da CLI. Cada execução usa arquivos temporários isolados e os remove ao terminar.
+
+A precedência `protetiva > faccao > generico` e o tratamento de pares com vítimas sem vínculo são convenções da implementação: o enunciado não define esses casos de sobreposição explicitamente. Os testes desses casos documentam o comportamento adotado. Não há gabaritos oficiais para os datasets 3–7, nem limite de tempo fixo nos testes: o desempate de desempenho deve ser medido separadamente em ambiente controlado.
